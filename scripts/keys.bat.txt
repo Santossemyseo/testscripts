@@ -1,0 +1,23 @@
+@echo off
+
+rem contraseñas almacenadas
+cmdkey /list
+
+cmdkey /add:target /user:username /pass:password
+
+
+rem copiar las contraseñas almacenadas
+cmdkey /list >> "%userprofile%\Desktop\credenciales.txt"
+
+rem administrador de contraseñas
+control keymgr.dll
+echo Vaciando ...
+
+pause
+exit
+
+echo Vaciando la papelera de reciclaje...
+rem  alimina todas las credenciales
+rem :: cmdkey /delete /ras
+rem :: borrarlas cmdkey /delete:nombre_credential
+rem :: estando dentro se deben manejar herramientas de terceros para desencryptar las credenciales, como admin
