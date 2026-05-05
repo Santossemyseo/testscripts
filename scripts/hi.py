@@ -1,17 +1,15 @@
-import pyautogui
-import subprocess
+# Script: automatiza la apertura de CMD y escritura de comandos de prueba con pyautogui.
 import time
-# Usar comillas simples o dobles para indicar la combinación de teclas
+import pyautogui
+
 pyautogui.hotkey('win', 'r')
 time.sleep(1)
-# Escribir "cmd" para buscar el navegador Chrome
 pyautogui.write('cmd')
 time.sleep(1)
-# Presionar Enter para navegar a la página de Google
 pyautogui.press('enter')
 time.sleep(1)
-# Escribir "pwd" para buscar el navegador Chrome
-pyautogui.press('esto es una prueba')
+pyautogui.write('echo esto es una prueba')
+pyautogui.press('enter')
 time.sleep(1)
-pyautogui.press('desde python')
-time.sleep(1)
+pyautogui.write('echo desde python')
+pyautogui.press('enter')

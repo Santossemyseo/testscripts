@@ -1,4 +1,2 @@
-
-# Este es un script personalizado generado desde el programa.
+# Script: muestra un saludo de prueba generado automáticamente.
 print("Hola desde el script personalizado!")
-pause
