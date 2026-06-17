@@ -48,6 +48,16 @@ Python:
 - `scripts/noclosedcolab`: JavaScript para clic periódico en Colab.
 - `scripts/task schedelure sin logueo.xml`: export de tarea programada Windows.
 
+## Script forense DRP / Hyper-V
+
+- `scripts/Forensic-Investigation-V1.6.ps1`: version mejorada del recolector forense para archivo/carpeta. Acepta `-TargetPath` y `-BasePath`, conserva modo interactivo si no se pasa ruta, corrige el mapeo de campos Hyper-V, normaliza rutas para correlacion de discos, genera manifiesto SHA256 de salidas y mantiene limites configurables para evitar barridos excesivos de eventos.
+
+Ejemplo:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\Forensic-Investigation-V1.6.ps1 -TargetPath "C:\Ruta\Objetivo" -BasePath "C:\DRP\reporte"
+```
+
 ## Nota
 
 Si quieres, en un siguiente PR puedo dejar una estructura por carpetas (`python/`, `windows/`, `browser/`) y parametrizar todas las rutas absolutas.
