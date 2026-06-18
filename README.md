@@ -50,7 +50,7 @@ Python:
 
 ## Script forense DRP / Hyper-V
 
-- `scripts/Forensic-Investigation-V1.6.ps1`: version mejorada del recolector forense para archivo/carpeta. Acepta `-TargetPath` y `-BasePath`, conserva modo interactivo si no se pasa ruta, corrige el mapeo de campos Hyper-V, normaliza rutas para correlacion de discos, genera manifiesto SHA256 de salidas y mantiene limites configurables para evitar barridos excesivos de eventos.
+- `scripts/Forensic-Investigation-V1.6.ps1`: version mejorada del recolector forense para archivo/carpeta. Acepta `-TargetPath` y `-BasePath`, conserva modo interactivo si no se pasa ruta, corrige el mapeo de campos Hyper-V, normaliza rutas para correlacion de discos, integra analisis avanzado de VMMS/Worker, checkpoints, merges, snapshots, AVHDX, tipo de VHD y relacion VM-disco, genera manifiesto SHA256 de salidas y mantiene limites configurables para evitar barridos excesivos de eventos.
 
 Ejemplo:
 

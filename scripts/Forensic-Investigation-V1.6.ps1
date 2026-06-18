@@ -10,6 +10,7 @@
   - Parametro -BasePath para no depender exclusivamente de C:\DRP\reporte.
   - Mapeo correcto de propiedades Hyper-V hacia el resultado final.
   - Normalizacion de rutas para correlacionar discos Hyper-V.
+  - Analisis avanzado Hyper-V: VMMS, Worker, checkpoints, merges, AVHDX, tipo de VHD y relacion con VM.
   - Inventarios CSV/JSON con rutas de salida registradas en el resultado.
   - Manifest SHA256 de los reportes generados para cadena de custodia.
   - Limites configurables de eventos y antiguedad de logs.
@@ -25,6 +26,7 @@ param(
     [string]$BasePath = 'C:\DRP\reporte',
     [int]$MaxSecurityEventsToScan = 5000,
     [int]$MaxSecurityMatches = 100,
+    [int]$MaxHyperVEventsToScan = 5000,
     [int]$EventLookbackYears = 2,
     [switch]$NoSelfElevate
 )
@@ -47,6 +49,7 @@ function Start-SelfElevation {
     if ($BasePath) { $argList += @('-BasePath', "`"$BasePath`"") }
     $argList += @('-MaxSecurityEventsToScan', $MaxSecurityEventsToScan)
     $argList += @('-MaxSecurityMatches', $MaxSecurityMatches)
+    $argList += @('-MaxHyperVEventsToScan', $MaxHyperVEventsToScan)
     $argList += @('-EventLookbackYears', $EventLookbackYears)
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList
     exit
@@ -165,17 +168,19 @@ function Get-HyperVModuleAvailable {
     catch { return $false }
 }
 
-function Get-HyperVVMMSEvents {
+function Get-HyperVLogEvents {
     param(
+        [Parameter(Mandatory=$true)][string]$LogName,
         [Parameter(Mandatory=$true)][string[]]$SearchTerms,
-        [int]$LookbackYears = 2
+        [int]$LookbackYears = 2,
+        [int]$MaxEventsToScan = 5000
     )
 
     try {
         $events = Get-WinEvent -FilterHashtable @{
-            LogName   = 'Microsoft-Windows-Hyper-V-VMMS-Admin'
+            LogName   = $LogName
             StartTime = (Get-Date).AddYears(-1 * $LookbackYears)
-        } -ErrorAction SilentlyContinue
+        } -MaxEvents $MaxEventsToScan -ErrorAction SilentlyContinue
 
         return @($events | Where-Object {
             $message = $_.Message
@@ -186,21 +191,44 @@ function Get-HyperVVMMSEvents {
     }
 }
 
+function Get-HyperVVMMSEvents {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$SearchTerms,
+        [int]$LookbackYears = 2,
+        [int]$MaxEventsToScan = 5000
+    )
+
+    return Get-HyperVLogEvents -LogName 'Microsoft-Windows-Hyper-V-VMMS-Admin' -SearchTerms $SearchTerms -LookbackYears $LookbackYears -MaxEventsToScan $MaxEventsToScan
+}
+
+function Get-HyperVWorkerEvents {
+    param(
+        [Parameter(Mandatory=$true)][string[]]$SearchTerms,
+        [int]$LookbackYears = 2,
+        [int]$MaxEventsToScan = 5000
+    )
+
+    return Get-HyperVLogEvents -LogName 'Microsoft-Windows-Hyper-V-Worker-Admin' -SearchTerms $SearchTerms -LookbackYears $LookbackYears -MaxEventsToScan $MaxEventsToScan
+}
+
 function Get-TargetHyperVInfo {
     param(
         [Parameter(Mandatory=$true)][string]$InputPath,
         [Parameter(Mandatory=$true)][object]$Item,
         [Parameter(Mandatory=$true)][string]$ReportRoot,
         [Parameter(Mandatory=$true)][string]$TimeStamp,
-        [int]$LookbackYears = 2
+        [int]$LookbackYears = 2,
+        [int]$MaxEventsToScan = 5000
     )
 
     $result = [ordered]@{
         TargetIsHyperV = $false; HyperV_DiskPath = $null; HyperV_VhdType = $null; HyperV_FileSizeGB = $null
         HyperV_MaxSizeGB = $null; HyperV_ParentPath = $null; HyperV_Fragmentation = $null; HyperV_VMName = $null
-        HyperV_VMState = $null; HyperV_VMCreationTime = $null; HyperV_CheckpointType = $null; HyperV_SnapshotCount = $null
+        HyperV_VMId = $null; HyperV_VMState = $null; HyperV_VMCreationTime = $null; HyperV_CheckpointType = $null; HyperV_SnapshotCount = $null
         HyperV_Exports = 0; HyperV_MergeStart = 0; HyperV_MergeEnd = 0; HyperV_Checkpoints = 0
-        HyperV_CheckpointDeletes = 0; HyperV_AVHDXCount = 0; HyperV_TimelineFile = $null; HyperV_Error = $null
+        HyperV_CheckpointDeletes = 0; HyperV_VMMSLogName = 'Microsoft-Windows-Hyper-V-VMMS-Admin'; HyperV_VMMSEventCount = 0
+        HyperV_WorkerLogName = 'Microsoft-Windows-Hyper-V-Worker-Admin'; HyperV_WorkerEventCount = 0; HyperV_WorkerTimelineFile = $null
+        HyperV_AVHDXCount = 0; HyperV_AVHDXInventoryFile = $null; HyperV_TimelineFile = $null; HyperV_Error = $null
         HyperV_DynamicToFixedSignal = $null
     }
 
@@ -235,6 +263,7 @@ function Get-TargetHyperVInfo {
 
             try {
                 $vm = Get-VM -Name $vmName -ErrorAction Stop
+                $result.HyperV_VMId = $vm.Id
                 $result.HyperV_VMState = $vm.State.ToString()
                 $result.HyperV_VMCreationTime = $vm.CreationTime
                 $result.HyperV_CheckpointType = $vm.CheckpointType.ToString()
@@ -243,7 +272,11 @@ function Get-TargetHyperVInfo {
             $snapshots = @(Get-VMSnapshot -VMName $vmName -ErrorAction SilentlyContinue)
             $result.HyperV_SnapshotCount = $snapshots.Count
 
-            $vmmsEvents = Get-HyperVVMMSEvents -SearchTerms @($vmName, [IO.Path]::GetFileName($InputPath)) -LookbackYears $LookbackYears
+            $searchTerms = @($vmName, $result.HyperV_VMId, [IO.Path]::GetFileName($InputPath), $InputPath)
+            $vmmsEvents = Get-HyperVVMMSEvents -SearchTerms $searchTerms -LookbackYears $LookbackYears -MaxEventsToScan $MaxEventsToScan
+            $workerEvents = Get-HyperVWorkerEvents -SearchTerms $searchTerms -LookbackYears $LookbackYears -MaxEventsToScan $MaxEventsToScan
+            $result.HyperV_VMMSEventCount = $vmmsEvents.Count
+            $result.HyperV_WorkerEventCount = $workerEvents.Count
             $result.HyperV_Exports = @($vmmsEvents | Where-Object { $_.Id -eq 18303 }).Count
             $result.HyperV_MergeStart = @($vmmsEvents | Where-Object { $_.Id -eq 19070 }).Count
             $result.HyperV_MergeEnd = @($vmmsEvents | Where-Object { $_.Id -eq 19080 }).Count
@@ -256,11 +289,25 @@ function Get-TargetHyperVInfo {
                     Export-Csv -Path $timelineFile -NoTypeInformation -Encoding UTF8
                 $result.HyperV_TimelineFile = $timelineFile
             }
+
+            if ($workerEvents.Count -gt 0) {
+                $workerTimelineFile = Join-Path $ReportRoot ("csv\HyperVWorkerTimeline_{0}.csv" -f $TimeStamp)
+                $workerEvents | Select-Object TimeCreated, Id, LevelDisplayName, Message | Sort-Object TimeCreated |
+                    Export-Csv -Path $workerTimelineFile -NoTypeInformation -Encoding UTF8
+                $result.HyperV_WorkerTimelineFile = $workerTimelineFile
+            }
         }
 
         $folder = Split-Path -Path $InputPath -Parent
         if (Test-Path -LiteralPath $folder) {
-            $result.HyperV_AVHDXCount = @(Get-ChildItem -LiteralPath $folder -Recurse -File -Filter *.avhdx -ErrorAction SilentlyContinue).Count
+            $avhdxFiles = @(Get-ChildItem -LiteralPath $folder -Recurse -File -Filter *.avhdx -ErrorAction SilentlyContinue)
+            $result.HyperV_AVHDXCount = $avhdxFiles.Count
+            if ($avhdxFiles.Count -gt 0) {
+                $avhdxInventoryFile = Join-Path $ReportRoot ("csv\HyperVAVHDXInventory_{0}.csv" -f $TimeStamp)
+                $avhdxFiles | Select-Object FullName, Length, CreationTime, LastWriteTime, LastAccessTime |
+                    Export-Csv -Path $avhdxInventoryFile -NoTypeInformation -Encoding UTF8
+                $result.HyperV_AVHDXInventoryFile = $avhdxInventoryFile
+            }
         }
     } catch {
         $result.HyperV_Error = $_.Exception.Message
@@ -346,10 +393,21 @@ function Get-ManagerSummary {
         $lines.Add("SHA256: $($Result.SHA256)")
         $lines.Add("Tamano bytes: $($Result.SizeBytes)")
     }
-    if ($Result.TargetIsHyperV) {
+    if ($Result.TargetIsHyperV -or $Result.HyperV_VMName -or $Result.HyperV_VhdType) {
         $lines.Add('')
+        $lines.Add('=================================================')
         $lines.Add('ANALISIS HYPER-V')
-        foreach ($name in @('HyperV_VMName', 'HyperV_VMState', 'HyperV_VhdType', 'HyperV_MaxSizeGB', 'HyperV_FileSizeGB', 'HyperV_ParentPath', 'HyperV_SnapshotCount', 'HyperV_AVHDXCount', 'HyperV_Exports', 'HyperV_MergeStart', 'HyperV_MergeEnd', 'HyperV_DynamicToFixedSignal', 'HyperV_TimelineFile')) {
+        $lines.Add('=================================================')
+        $lines.Add('')
+        foreach ($name in @(
+            'HyperV_VMName', 'HyperV_VMId', 'HyperV_VMState', 'HyperV_VMCreationTime', 'HyperV_CheckpointType',
+            'HyperV_VhdType', 'HyperV_FileSizeGB', 'HyperV_MaxSizeGB', 'HyperV_ParentPath', 'HyperV_Fragmentation',
+            'HyperV_SnapshotCount', 'HyperV_AVHDXCount', 'HyperV_AVHDXInventoryFile',
+            'HyperV_VMMSLogName', 'HyperV_VMMSEventCount', 'HyperV_Exports', 'HyperV_MergeStart', 'HyperV_MergeEnd',
+            'HyperV_Checkpoints', 'HyperV_CheckpointDeletes', 'HyperV_TimelineFile',
+            'HyperV_WorkerLogName', 'HyperV_WorkerEventCount', 'HyperV_WorkerTimelineFile',
+            'HyperV_DynamicToFixedSignal', 'HyperV_Error'
+        )) {
             $lines.Add(('{0}: {1}' -f $name, $Result.$name))
         }
     }
@@ -409,9 +467,11 @@ try {
         SizeBytes = $null; SHA256 = $null; AuditPolicy = $auditPolicy; AuditPolicyState = $auditPolicyState
         NTFSAudit = 'NO DISPONIBLE'; USNJournal = Get-USNStatus; Sysmon = Get-SysmonStatus; SecurityEventsFound = 0
         TargetIsHyperV = $false; HyperV_DiskPath = $null; HyperV_VhdType = $null; HyperV_FileSizeGB = $null; HyperV_MaxSizeGB = $null
-        HyperV_ParentPath = $null; HyperV_Fragmentation = $null; HyperV_VMName = $null; HyperV_VMState = $null; HyperV_VMCreationTime = $null
+        HyperV_ParentPath = $null; HyperV_Fragmentation = $null; HyperV_VMName = $null; HyperV_VMId = $null; HyperV_VMState = $null; HyperV_VMCreationTime = $null
         HyperV_CheckpointType = $null; HyperV_SnapshotCount = $null; HyperV_Exports = 0; HyperV_MergeStart = 0; HyperV_MergeEnd = 0
-        HyperV_Checkpoints = 0; HyperV_CheckpointDeletes = 0; HyperV_AVHDXCount = 0; HyperV_TimelineFile = $null; HyperV_Error = $null
+        HyperV_Checkpoints = 0; HyperV_CheckpointDeletes = 0; HyperV_VMMSLogName = 'Microsoft-Windows-Hyper-V-VMMS-Admin'; HyperV_VMMSEventCount = 0
+        HyperV_WorkerLogName = 'Microsoft-Windows-Hyper-V-Worker-Admin'; HyperV_WorkerEventCount = 0; HyperV_WorkerTimelineFile = $null
+        HyperV_AVHDXCount = 0; HyperV_AVHDXInventoryFile = $null; HyperV_TimelineFile = $null; HyperV_Error = $null
         HyperV_DynamicToFixedSignal = $null; DRP_ScriptCount = 0; AzCopyLogCount = 0; HistoricalVhdCount = 0
         HyperVRelatedExportCount = 0; HyperVRelatedMergeCount = 0; FixedVhdCount = 0; DynamicVhdCount = 0
         ForensicScore = 0; Capability = 'DESCONOCIDA'; OutputFiles = @(); Notes = @()
@@ -428,7 +488,7 @@ try {
     $securityEvents = Get-LimitedSecurityEvents -InputPath $item.FullName -MaxEventsToScan $MaxSecurityEventsToScan -MaxMatches $MaxSecurityMatches
     $result.SecurityEventsFound = @($securityEvents).Count
 
-    $hypervInfo = Get-TargetHyperVInfo -InputPath $item.FullName -Item $item -ReportRoot $BasePath -TimeStamp $TimeStamp -LookbackYears $EventLookbackYears
+    $hypervInfo = Get-TargetHyperVInfo -InputPath $item.FullName -Item $item -ReportRoot $BasePath -TimeStamp $TimeStamp -LookbackYears $EventLookbackYears -MaxEventsToScan $MaxHyperVEventsToScan
     foreach ($prop in $hypervInfo.PSObject.Properties) { $result[$prop.Name] = $prop.Value }
 
     $rootForInventory = if ($item.PSIsContainer) { $item.FullName } else { Split-Path -Path $item.FullName -Parent }
@@ -476,7 +536,7 @@ try {
     if ($vhdInventory.Count -gt 0) { $vhdInventory | Export-Csv -Path (Join-Path $BasePath ("csv\vhd_inventory_{0}.csv" -f $TimeStamp)) -NoTypeInformation -Encoding UTF8 }
 
     Get-ManagerSummary -Result ([pscustomobject]$result) | Out-File -FilePath $summaryFile -Encoding UTF8
-    Export-Manifest -Files @($txtFile, $jsonFile, $csvFile, $summaryFile, $TranscriptFile, $result.HyperV_TimelineFile) -ManifestPath $manifestFile
+    Export-Manifest -Files @($txtFile, $jsonFile, $csvFile, $summaryFile, $TranscriptFile, $result.HyperV_TimelineFile, $result.HyperV_WorkerTimelineFile, $result.HyperV_AVHDXInventoryFile) -ManifestPath $manifestFile
 
     Write-Section -Title 'RESULTADO'
     Write-Host 'Analisis completado.' -ForegroundColor Green
